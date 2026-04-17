@@ -8,7 +8,7 @@ from datetime import timezone, timedelta
 import requests
 
 import config
-from signal import SignalResult
+from detector import SignalResult
 
 logger = logging.getLogger(__name__)
 

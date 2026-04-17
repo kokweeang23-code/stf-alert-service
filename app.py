@@ -20,7 +20,7 @@ from flask import Flask, jsonify
 
 import config
 import fetcher
-import signal as sig_module
+import detector as sig_module
 import notifier
 
 # ── Logging ────────────────────────────────────────────────────────────────
