@@ -182,13 +182,19 @@ def start_scheduler():
 
 # ── Startup (runs on import — works with Gunicorn) ─────────────────────────
 
-logger.info("STF Alert Service starting (module load)...")
-notifier.send_startup_message()
-_scheduler = start_scheduler()
+try:
+    logger.info("STF Alert Service starting (module load)...")
+    notifier.send_startup_message()
+    _scheduler = start_scheduler()
 
-# Run an immediate first check so we don't wait 30 min for first data point
-import threading
-threading.Thread(target=lambda: run_check("startup"), daemon=True).start()
+    # Run an immediate first check so we don't wait 30 min for first data point
+    import threading
+    threading.Thread(target=lambda: run_check("startup"), daemon=True).start()
+    logger.info("STF Alert Service startup complete.")
+except Exception as _startup_exc:
+    import traceback
+    logger.error("STARTUP FAILED: %s", _startup_exc)
+    logger.error(traceback.format_exc())
 
 
 # ── Entry point (local dev only) ────────────────────────────────────────────
