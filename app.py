@@ -22,6 +22,7 @@ import config
 import fetcher
 import detector as sig_module
 import notifier
+import heatmap as heatmap_module
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -131,6 +132,54 @@ def manual_run():
     """Manual trigger — useful for testing after deploy."""
     result = run_check(source="manual")
     return jsonify(result)
+
+
+@app.route("/heatmap")
+def heatmap_route():
+    """Manually trigger heatmap screenshot + Telegram send."""
+    import threading
+    threading.Thread(target=heatmap_module.fetch_and_send, daemon=True).start()
+    return jsonify({"status": "heatmap_requested", "note": "Screenshot being taken, Telegram message incoming..."})
+
+
+@app.route("/telegram", methods=["POST"])
+def telegram_webhook():
+    """
+    Telegram webhook — handles bot commands sent by the user.
+    Commands supported:
+      /heatmap  — screenshot + send heatmap
+      /status   — current service status
+      /run      — manual signal check
+    """
+    from flask import request
+    import threading
+
+    data = request.get_json(force=True, silent=True) or {}
+    message = data.get("message", {})
+    text = message.get("text", "").strip().lower()
+
+    logger.info("Telegram webhook: %s", text)
+
+    if text.startswith("/heatmap"):
+        threading.Thread(target=heatmap_module.fetch_and_send, daemon=True).start()
+
+    elif text.startswith("/status"):
+        def _fmt(dt):
+            return dt.astimezone(SGT).strftime("%Y-%m-%d %H:%M SGT") if dt else "N/A"
+        msg = (
+            f"📊 <b>STF Alert Service Status</b>\n"
+            f"Last check: {_fmt(state['last_check'])}\n"
+            f"Last signal: {state['last_signal'] or 'none'}\n"
+            f"BTC price: ${state['last_price']:,.0f}\n"
+            f"Checks: {state['checks_total']} | Alerts: {state['alerts_total']}\n"
+            f"Last error: {state['last_error'] or 'none'}"
+        )
+        notifier._send_message(msg) if hasattr(notifier, '_send_message') else None
+
+    elif text.startswith("/run"):
+        threading.Thread(target=lambda: run_check("telegram"), daemon=True).start()
+
+    return jsonify({"ok": True})
 
 
 @app.route("/status")
