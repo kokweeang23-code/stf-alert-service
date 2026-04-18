@@ -78,7 +78,7 @@ def take_screenshot() -> str | None:
                 ],
             )
             context = browser.new_context(
-                viewport={"width": 1400, "height": 750},
+                viewport={"width": 1600, "height": 900},
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -95,7 +95,8 @@ def take_screenshot() -> str | None:
 
             # Try to dismiss any cookie/modal overlays
             for selector in ["button:has-text('Accept')", "button:has-text('Close')",
-                              "[class*='modal'] button", "[class*='cookie'] button"]:
+                              "[class*='modal'] button", "[class*='cookie'] button",
+                              "[class*='close'] button", ".cg-modal-close"]:
                 try:
                     page.click(selector, timeout=1500)
                     time.sleep(0.5)
@@ -103,9 +104,27 @@ def take_screenshot() -> str | None:
                     pass
 
             # Extra wait for chart animations to complete
-            time.sleep(2)
+            time.sleep(3)
 
-            page.screenshot(path=screenshot_path, full_page=False)
+            # Try to screenshot just the chart container
+            try:
+                chart = page.locator("canvas").first
+                chart_box = chart.bounding_box()
+                if chart_box and chart_box["width"] > 400:
+                    # Expand bounding box to include price axis
+                    clip = {
+                        "x": max(0, chart_box["x"] - 40),
+                        "y": max(0, chart_box["y"] - 20),
+                        "width": chart_box["width"] + 80,
+                        "height": chart_box["height"] + 40,
+                    }
+                    page.screenshot(path=screenshot_path, clip=clip)
+                    logger.info("Chart clipped screenshot: %s", clip)
+                else:
+                    page.screenshot(path=screenshot_path, full_page=False)
+            except Exception:
+                page.screenshot(path=screenshot_path, full_page=False)
+
             browser.close()
 
         logger.info("Screenshot saved: %s", screenshot_path)
