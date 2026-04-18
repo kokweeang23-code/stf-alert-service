@@ -78,7 +78,7 @@ def take_screenshot() -> str | None:
                 ],
             )
             context = browser.new_context(
-                viewport={"width": 1600, "height": 900},
+                viewport={"width": 1600, "height": 1000},
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -106,17 +106,35 @@ def take_screenshot() -> str | None:
             # Extra wait for chart animations to complete
             time.sleep(3)
 
+            # Hide navbar, sidebar, ads and overlays to maximise chart area
+            page.evaluate("""
+                const selectors = [
+                    'nav', 'header', '.navbar', '.sidebar', '.left-sidebar',
+                    '.announcement', '.banner', '[class*="banner"]',
+                    '[class*="ad-"]', '[class*="advertisement"]',
+                    '[class*="modal"]', '[class*="overlay"]',
+                    '[class*="cookie"]', '[class*="toast"]',
+                    '.footer', 'footer'
+                ];
+                selectors.forEach(sel => {
+                    document.querySelectorAll(sel).forEach(el => {
+                        el.style.display = 'none';
+                    });
+                });
+            """)
+            time.sleep(1)
+
             # Try to screenshot just the chart container
             try:
                 chart = page.locator("canvas").first
                 chart_box = chart.bounding_box()
                 if chart_box and chart_box["width"] > 400:
-                    # Expand bounding box to include price axis
+                    # Expand bounding box to include color scale bar (left) + price axis (right)
                     clip = {
-                        "x": max(0, chart_box["x"] - 40),
-                        "y": max(0, chart_box["y"] - 20),
-                        "width": chart_box["width"] + 80,
-                        "height": chart_box["height"] + 40,
+                        "x": max(0, chart_box["x"] - 80),
+                        "y": max(0, chart_box["y"] - 30),
+                        "width": chart_box["width"] + 160,
+                        "height": chart_box["height"] + 60,
                     }
                     page.screenshot(path=screenshot_path, clip=clip)
                     logger.info("Chart clipped screenshot: %s", clip)
