@@ -41,9 +41,10 @@ CG_OI_ENDPOINT       = "/api/futures/open-interest/aggregated-history"
 CG_FUNDING_ENDPOINT  = "/api/futures/funding-rate/history"
 
 # ── Binance endpoint ───────────────────────────────────────────────────────
-# Spot API used (not futures/fapi) — fapi.binance.com returns 451 geo-block on Railway
-BINANCE_BASE         = "https://api.binance.com"
-BINANCE_KLINES       = "/api/v3/klines"
+# Railway region must be SE Asia (Singapore) — Binance blocks US/EU regions
+# Use fapi.binance.com (futures) — NOT api.binance.com (spot, gets geo-blocked)
+BINANCE_BASE         = "https://fapi.binance.com"
+BINANCE_KLINES       = "/fapi/v1/klines"
 
 # ── Scheduler ─────────────────────────────────────────────────────────────
 POLL_INTERVAL_MINUTES = 30   # how often to check for signals
