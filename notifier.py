@@ -17,39 +17,40 @@ SGT = timezone(timedelta(hours=8))
 
 def format_message(sig: SignalResult) -> str:
     """
-    Format a clean Telegram alert message for a sweep signal.
+    Format a clean Telegram alert message for a Cfg1 sweep signal.
     No TP/SL levels — user applies heatmap judgment before entry.
     """
     # Direction emoji and label
     if sig.direction == "LONG":
-        dir_emoji = "🟢"
-        liq_label = "Long-liq z-score"
+        dir_emoji  = "🟢"
         sweep_desc = "Longs flushed — fade the flush"
     else:
-        dir_emoji = "🔴"
-        liq_label = "Short-liq z-score"
+        dir_emoji  = "🔴"
         sweep_desc = "Shorts squeezed — fade the squeeze"
 
     # Time in SGT
-    bar_sgt = sig.bar_time.astimezone(SGT)
+    bar_sgt  = sig.bar_time.astimezone(SGT)
     time_str = bar_sgt.strftime("%Y-%m-%d %H:%M SGT")
 
     # Price formatted with commas
     price_str = f"${sig.price:,.0f}"
 
-    # Price move (show as absolute value with direction word)
+    # Price move (absolute value + direction word)
     pm_abs = abs(sig.price_move_pct)
     pm_dir = "fell" if sig.price_move_pct < 0 else "rose"
 
-    # OI drop
-    oi_str = f"-{sig.oi_drop_pct:.1f}%" if sig.oi_drop_pct > 0 else "n/a"
-
     # Funding rate
     if sig.funding_rate is not None:
-        fr_val  = sig.funding_rate
-        fr_sign = "+" if fr_val >= 0 else ""
-        fr_bias = "long-biased" if fr_val > 0.005 else ("short-biased" if fr_val < -0.005 else "neutral")
-        fr_str  = f"{fr_sign}{fr_val:.4f}% ({fr_bias})"
+        fr_val   = sig.funding_rate
+        fr_pct   = fr_val * 100          # convert to percentage display
+        fr_sign  = "+" if fr_pct >= 0 else ""
+        if fr_pct > 0.005:
+            fr_bias = "long-biased"
+        elif fr_pct < -0.005:
+            fr_bias = "short-biased"
+        else:
+            fr_bias = "neutral"
+        fr_str = f"{fr_sign}{fr_pct:.4f}% ({fr_bias})"
     else:
         fr_str = "n/a"
 
@@ -63,12 +64,11 @@ def format_message(sig: SignalResult) -> str:
         f"Price:  {price_str}\n"
         f"\n"
         f"Signal:\n"
-        f"  {liq_label}:  {sig.liq_zscore:.2f}  (min 1.5)\n"
+        f"  Vol z-score:         {sig.vol_zscore:.2f}  (min 1.5, 96-bar)\n"
         f"  Price {pm_dir}:        {pm_abs:.2f}%  (2-bar)\n"
-        f"  OI drop:           {oi_str}  (4h peak)\n"
+        f"  Funding rate:        {fr_str}\n"
         f"\n"
         f"Context:\n"
-        f"  Funding rate:  {fr_str}\n"
         f"  CVD:           {cvd_str}\n"
         f"\n"
         f"📋 {sweep_desc}\n"
@@ -89,9 +89,8 @@ def send_alert(sig: SignalResult) -> bool:
     msg = format_message(sig)
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id":    config.TELEGRAM_CHAT_ID,
-        "text":       msg,
-        "parse_mode": "HTML",
+        "chat_id": config.TELEGRAM_CHAT_ID,
+        "text":    msg,
     }
 
     try:
@@ -113,18 +112,17 @@ def send_startup_message() -> None:
         "✅ STF Alert Service started\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"Polling every {config.POLL_INTERVAL_MINUTES} min\n"
-        f"Signal: liq z>{config.LIQ_ZSCORE_THRESHOLD} "
-        f"(96-bar) + price >{config.PRICE_IMPULSE_MIN*100:.0f}% "
-        f"+ OI drop >{config.OI_DROP_MIN*100:.0f}%\n"
+        f"Signal (Cfg1): vol_z >= {config.VOL_ZSCORE_THRESHOLD} (96-bar) "
+        f"+ price >= {config.PRICE_IMPULSE_MIN * 100:.0f}% (2-bar) "
+        f"+ fund filter {config.FUND_FILTER * 100:.3f}%\n"
         f"Cooldown: {config.COOLDOWN_HOURS}h per direction\n"
         "Monitoring 24/7 — check heatmap on alert."
     )
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         requests.post(url, json={
-            "chat_id":    config.TELEGRAM_CHAT_ID,
-            "text":       msg,
-            "parse_mode": "HTML",
+            "chat_id": config.TELEGRAM_CHAT_ID,
+            "text":    msg,
         }, timeout=10)
     except Exception as e:
         logger.warning("Startup message failed: %s", e)
