@@ -81,6 +81,9 @@ def run_check(source: str = "scheduler") -> dict:
             last_short_alert = state["last_short_alert"],
         )
 
+        # Reset error state on successful fetch
+        notifier.send_recovery_message()
+
         if result:
             # Send Telegram alert
             sent = notifier.send_alert(result)
