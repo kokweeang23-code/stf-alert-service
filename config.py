@@ -37,11 +37,8 @@ INTERVAL      = "30m"
 LOOKBACK_BARS = 200   # bars fetched per poll; 200 × 30m = 100h (covers vol_win=96 + buffer)
 
 # ── Binance endpoints ───────────────────────────────────────────────────────
-# Binance public market-data mirror (data-api.binance.vision)
-# - Globally accessible (no geo-block, unlike fapi.binance.com)
-# - Separate IP quota (avoids the 418 ban that hit fapi.binance.com)
-# - Same /fapi/v1/* paths and JSON schema, no API key required
-BINANCE_BASE            = "https://data-api.binance.vision"
+# Railway region MUST be SE Asia (Singapore) — Binance fapi returns 451 from US/EU
+BINANCE_BASE            = "https://fapi.binance.com"
 BINANCE_KLINES          = "/fapi/v1/klines"
 BINANCE_FUNDING_RATE    = "/fapi/v1/fundingRate"
 
