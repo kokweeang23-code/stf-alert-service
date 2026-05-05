@@ -1,9 +1,17 @@
 """
 notifier.py — Telegram notification formatter and sender for STF Alert Service.
+
+Error-alert behavior (added 2026-05-05):
+  - First failure of a kind: alert immediately
+  - Same error repeating: re-alert at most once per ERROR_REALERT_MINUTES
+  - Different error: alert immediately (new problem)
+  - Recovery: "fetch recovered" alert after a failure streak ends
 """
 
 import logging
-from datetime import timezone, timedelta
+import re
+from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 import requests
 
@@ -14,13 +22,31 @@ logger = logging.getLogger(__name__)
 
 SGT = timezone(timedelta(hours=8))
 
+# ── Error rate-limiting state ──────────────────────────────────────────────
+ERROR_REALERT_MINUTES = 60   # repeat reminder for same error every N min
+
+_err_state = {
+    "last_error_signature": None,    # normalized error string
+    "last_error_time":      None,    # UTC datetime of last error sent
+    "failure_streak":       0,       # consecutive failures (resets on success)
+}
+
+
+def _err_signature(error: str) -> str:
+    """
+    Normalize an error string so 'same kind' errors collapse together.
+    Strips digits, URLs, timestamps so '418 ...' always matches '418 ...'.
+    """
+    sig = re.sub(r"https?://\S+", "<url>", error)
+    sig = re.sub(r"\b\d+\b", "<num>", sig)
+    return sig.strip()[:200]
+
 
 def format_message(sig: SignalResult) -> str:
     """
     Format a clean Telegram alert message for a Cfg1 sweep signal.
     No TP/SL levels — user applies heatmap judgment before entry.
     """
-    # Direction emoji and label
     if sig.direction == "LONG":
         dir_emoji  = "🟢"
         sweep_desc = "Longs flushed — fade the flush"
@@ -28,21 +54,16 @@ def format_message(sig: SignalResult) -> str:
         dir_emoji  = "🔴"
         sweep_desc = "Shorts squeezed — fade the squeeze"
 
-    # Time in SGT
     bar_sgt  = sig.bar_time.astimezone(SGT)
     time_str = bar_sgt.strftime("%Y-%m-%d %H:%M SGT")
-
-    # Price formatted with commas
     price_str = f"${sig.price:,.0f}"
 
-    # Price move (absolute value + direction word)
     pm_abs = abs(sig.price_move_pct)
     pm_dir = "fell" if sig.price_move_pct < 0 else "rose"
 
-    # Funding rate
     if sig.funding_rate is not None:
         fr_val   = sig.funding_rate
-        fr_pct   = fr_val * 100          # convert to percentage display
+        fr_pct   = fr_val * 100
         fr_sign  = "+" if fr_pct >= 0 else ""
         if fr_pct > 0.005:
             fr_bias = "long-biased"
@@ -54,7 +75,6 @@ def format_message(sig: SignalResult) -> str:
     else:
         fr_str = "n/a"
 
-    # CVD
     cvd_str = "Diverging ✓" if sig.cvd_diverging else "Not diverging"
 
     msg = (
@@ -77,37 +97,35 @@ def format_message(sig: SignalResult) -> str:
     return msg
 
 
-def send_alert(sig: SignalResult) -> bool:
-    """
-    Send formatted alert to Telegram.
-    Returns True on success, False on failure.
-    """
+def _send_message(text: str) -> bool:
+    """Internal helper — POSTs raw text to Telegram. Returns success bool."""
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
         logger.error("Telegram credentials not configured")
         return False
-
-    msg = format_message(sig)
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": config.TELEGRAM_CHAT_ID,
-        "text":    msg,
-    }
-
     try:
-        resp = requests.post(url, json=payload, timeout=10)
+        resp = requests.post(url, json={
+            "chat_id": config.TELEGRAM_CHAT_ID,
+            "text":    text,
+        }, timeout=10)
         resp.raise_for_status()
-        logger.info("Telegram alert sent: %s signal at %s", sig.direction, sig.bar_time)
         return True
     except Exception as e:
         logger.error("Telegram send failed: %s", e)
         return False
 
 
+def send_alert(sig: SignalResult) -> bool:
+    """Send formatted alert to Telegram. Returns True on success."""
+    msg = format_message(sig)
+    ok = _send_message(msg)
+    if ok:
+        logger.info("Telegram alert sent: %s signal at %s", sig.direction, sig.bar_time)
+    return ok
+
+
 def send_startup_message() -> None:
     """Send a startup confirmation message on service boot."""
-    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
-        return
-
     msg = (
         "✅ STF Alert Service started\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -118,26 +136,56 @@ def send_startup_message() -> None:
         f"Cooldown: {config.COOLDOWN_HOURS}h per direction\n"
         "Monitoring 24/7 — check heatmap on alert."
     )
-    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={
-            "chat_id": config.TELEGRAM_CHAT_ID,
-            "text":    msg,
-        }, timeout=10)
-    except Exception as e:
-        logger.warning("Startup message failed: %s", e)
+    _send_message(msg)
 
 
 def send_error_message(context: str, error: str) -> None:
-    """Send a brief error notification to Telegram."""
-    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
-        return
-    msg = f"⚠️ STF Alert — fetch error\n{context}\n{error}"
-    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={
-            "chat_id": config.TELEGRAM_CHAT_ID,
-            "text":    msg,
-        }, timeout=10)
-    except Exception:
-        pass
+    """
+    Send error notification with rate-limiting:
+      - First failure → alert immediately
+      - Same error within ERROR_REALERT_MINUTES → suppress
+      - Different error → alert immediately
+      - On Nth repeat after window → re-alert (reminder it's still broken)
+    """
+    now = datetime.now(timezone.utc)
+    sig = _err_signature(error)
+
+    _err_state["failure_streak"] += 1
+
+    last_sig  = _err_state["last_error_signature"]
+    last_time = _err_state["last_error_time"]
+
+    # Same error & within mute window → suppress
+    if last_sig == sig and last_time is not None:
+        elapsed = (now - last_time).total_seconds() / 60
+        if elapsed < ERROR_REALERT_MINUTES:
+            logger.info("Suppressing duplicate error alert (%d min since last, streak=%d)",
+                        int(elapsed), _err_state["failure_streak"])
+            return
+
+    # Send the alert
+    streak = _err_state["failure_streak"]
+    streak_note = f" (#{streak} consecutive)" if streak > 1 else ""
+    msg = f"⚠️ STF Alert — fetch error{streak_note}\n{context}\n{error}"
+    if _send_message(msg):
+        _err_state["last_error_signature"] = sig
+        _err_state["last_error_time"]      = now
+
+
+def send_recovery_message() -> None:
+    """
+    Call after a successful fetch. If we were in a failure streak,
+    send a 'recovered' alert and reset state. No-op otherwise.
+    """
+    streak = _err_state["failure_streak"]
+    if streak == 0:
+        return  # nothing to recover from
+
+    msg = (
+        f"✅ STF Alert — fetch recovered\n"
+        f"Resumed normal polling after {streak} consecutive failures."
+    )
+    _send_message(msg)
+    _err_state["last_error_signature"] = None
+    _err_state["last_error_time"]      = None
+    _err_state["failure_streak"]       = 0
